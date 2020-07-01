@@ -3,6 +3,7 @@
 
 import re
 import os
+import sys
 import shutil
 import json
 from contextlib import contextmanager
@@ -226,6 +227,22 @@ class AiidaLabApp(traitlets.HasTraits):
 
             # Switch to desired version
             check_output(['git', 'checkout', '--force', rev], cwd=self.path, stderr=STDOUT)
+
+
+            # Install dependencies into app directory with 'setup.py' if file is present.
+            if os.path.isfile(os.path.join(self.path, 'setup.py')):
+                check_output([sys.executable, '-m', 'pip', 'install', '--target=' + os.path.abspath(self.path),
+                              '--editable=.'],
+                              cwd=self.path,
+                              stderr=STDOUT)
+
+
+            # Install dependencies into app directory if 'reqiurements.txt' file is present.
+            elif os.path.isfile(os.path.join(self.path, 'requirements.txt')):
+                check_output([sys.executable, '-m', 'pip', 'install', '--target=' + os.path.abspath(self.path),
+                               '--editable=.', '--requirement=' + os.path.join(self.path, 'requirements.txt')],
+                              cwd=self.path,
+                              stderr=STDOUT)
 
             self.refresh()
             self._watch_repository()
