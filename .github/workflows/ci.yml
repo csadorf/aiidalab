@@ -4,7 +4,7 @@ on: [push, pull_request]
 
 jobs:
 
-  test-app:
+  test-home-app:
 
     runs-on: ubuntu-latest
     timeout-minutes: 10
