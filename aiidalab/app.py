@@ -39,12 +39,12 @@ class VersionSelectorWidget(ipw.VBox):
     """Class to choose app's version."""
 
     disabled = traitlets.Bool()
-    available_versions = traitlets.Dict(traitlets.Unicode())
 
     def __init__(self, *args, **kwargs):
         style = {'description_width': '100px'}
-        self.release_line = ipw.Dropdown(
-            description='Release line',
+        self.install_version = ipw.Dropdown(
+            description='Install version',
+            disabled=True,
             style=style,
         )
         self.installed_version = ipw.Text(
@@ -55,7 +55,7 @@ class VersionSelectorWidget(ipw.VBox):
         self.info = StatusHTML('')
 
         super().__init__(
-            children=[self.release_line, self.installed_version, self.info],
+            children=[self.install_version, self.installed_version, self.info],
             layout={'min_width': '300px'},
             *args,
             **kwargs,
@@ -63,7 +63,7 @@ class VersionSelectorWidget(ipw.VBox):
 
     @traitlets.observe('disabled')
     def _observe_disabled(self, change):
-        self.release_line.disabled = change['new']
+        self.install_version.disabled = change['new']
 
 
 class AiidaLabApp(traitlets.HasTraits):
@@ -82,8 +82,7 @@ class AiidaLabApp(traitlets.HasTraits):
     path = traitlets.Unicode(allow_none=True, readonly=True)
     install_info = traitlets.Unicode()
 
-    available_release_lines = traitlets.Set(traitlets.Unicode)
-    installed_release_line = traitlets.Unicode(allow_none=True)
+    available_versions = traitlets.List(traitlets.Unicode)
     installed_version = traitlets.Unicode(allow_none=True)
     updates_available = traitlets.Bool(readonly=True, allow_none=True)
 
@@ -106,9 +105,15 @@ class AiidaLabApp(traitlets.HasTraits):
         if app_data is not None:
             self._git_url = app_data['git_url']
             self._meta_url = app_data['meta_url']
-            self._git_remote_refs = app_data['gitinfo']
-            self.categories = app_data['categories']
-            self._meta_info = app_data['metainfo']
+            self._git_remote_refs = app_data.get('gitinfo', dict())
+            self.categories = app_data.get('categories', list())
+            self._meta_info = app_data.get('metainfo')
+
+            if '@' in self._git_url:
+                self._release_line = self._ReleaseLine(self, self._git_url.split('@')[1])
+            else:
+                self._release_line = self._ReleaseLine(self, AIIDALAB_DEFAULT_GIT_BRANCH)
+
         else:
             self._git_url = None
             self._meta_url = None
@@ -205,28 +210,32 @@ class AiidaLabApp(traitlets.HasTraits):
     def install_app(self, version=None):
         """Installing the app."""
         assert self._git_url is not None
-        if version is None:
-            version = 'git:refs/heads/' + AIIDALAB_DEFAULT_GIT_BRANCH
 
         with self._show_busy():
-            assert version.startswith('git:refs/heads/')
-            branch = re.sub(r'git:refs\/heads\/', '', version)
+            if version is None:
+                version = f'git:{self._release_line.value}'
+
+            assert version.startswith('git:')
+            rev = re.sub('git:', '', version)
 
             if not os.path.isdir(self.path):  # clone first
-                check_output(['git', 'clone', '--branch', branch, self._git_url, self.path],
+                url = self._git_url.split('@')[0]
+                check_output(['git', 'clone', url, self.path],
                              cwd=os.path.dirname(self.path),
                              stderr=STDOUT)
 
-            check_output(['git', 'checkout', '-f', branch], cwd=self.path, stderr=STDOUT)
+            # Switch to desired version
+            check_output(['git', 'checkout', '--force', rev], cwd=self.path, stderr=STDOUT)
+
             self.refresh()
             self._watch_repository()
-            return branch
+            return self._release_line._map_to_version(rev)
 
     def update_app(self, _=None):
         """Perform app update."""
         assert self._git_url is not None
         with self._show_busy():
-            fetch(repo=self._repo, remote_location=self._git_url)
+            fetch(repo=self._repo, remote_location=self._git_url.split('@')[0])
             tracked_branch = self._repo.get_tracked_branch()
             check_output(['git', 'reset', '--hard', tracked_branch], cwd=self.path, stderr=STDOUT)
             self.refresh_async()
@@ -249,37 +258,123 @@ class AiidaLabApp(traitlets.HasTraits):
             assert self._git_url is not None
             branch_ref = 'refs/heads/' + self._repo.branch().decode()
             assert self._repo.get_tracked_branch() is not None
-            remote_update_available = self._git_remote_refs.get(branch_ref) != self._repo.head().decode()
+            remote_ref = self._git_remote_refs.get(branch_ref)
+            remote_update_available = remote_ref is not None and remote_ref != self._repo.head().decode()
             self.set_trait('updates_available', remote_update_available or self._repo.update_available())
         except (AssertionError, RuntimeError):
             self.set_trait('updates_available', None)
 
-    def _available_release_lines(self):
-        """"Return all available release lines (local and remote)."""
-        for branch in self._repo.list_branches():
-            yield 'git:refs/heads/' + branch.decode()
-        for ref in self._git_remote_refs:
-            if ref.startswith('refs/heads/'):
-                yield 'git:' + ref
+    class _ReleaseLine:
+
+        def __init__(self, app, value):
+            self.app = app
+            self.value = value
+
+        @property
+        def _repo(self):
+            return self.app._repo
+
+        def _find_ref(self):
+            if f'refs/heads/{self.value}'.encode() in self._repo.refs.allkeys():  # is head
+                return f'refs/heads/{self.value}'.encode()
+            elif f'refs/tags/{self.value}'.encode() in self._repo.refs.allkeys():  # is tag
+                return f'refs/tags/{self.value}'.encode()
+            else:
+                return None  # has no ref
+
+        def name(self):
+            ref = self._find_ref()
+            if ref is None:
+                return self.value.encode()
+            else:
+                return ref
+
+        def __hash__(self):
+            ref = self._find_ref()
+            if ref is None:
+                return self.value.decode()
+            else:
+                return self._repo.get_peeled(ref).decode()
+
+        def _find_versions(self):
+            """Find versions available for this release line.
+
+            When encountering an ambiguous release line name, i.e.,
+            a shared branch and tag name, we give preference to the
+            branch, because that is what git does in this situation.
+            """
+
+            requested_ref = self._find_ref()
+
+            # The release line is a commit.
+            if requested_ref is None:
+                assert self.value.encode() in self._repo.object_store
+                yield self.value.encode()
+
+            # The release line is a head (branch).
+            elif requested_ref.startswith(b'refs/heads/'):
+                requested_ref_commit = self._repo.get_peeled(requested_ref)
+                all_tags = {ref: c for ref, c in self._repo.refs.as_dict().items() if ref.startswith('refs/tags'.encode())}
+                tags_lookup = {c: ref for ref, c in all_tags.items()}
+                tagged_commits_on_head = [c.commit.id for c in self._repo.get_walker(self._repo.refs[requested_ref])
+                                          if c.commit.id in tags_lookup]
+                yield tags_lookup.get(requested_ref_commit, requested_ref)
+                for commit in tagged_commits_on_head:
+                    if commit != requested_ref_commit:
+                        yield tags_lookup[commit]
+
+            # The release line is a tag.
+            elif requested_ref.startswith(b'refs/tags/'):
+                yield requested_ref
+
+            # Unable to identify any committish for this release line.
+            else:
+                raise ValueError(f"Unable to identify versions for '{self.value}'")
+
+        def _latest_version(self):
+            """Return the latest version for this release line."""
+            for version in self._find_versions():
+                return version
+
+        def _map_to_sha(self, rev):
+            """Map a revision to a sha if possible."""
+            if len(rev) == 40 and rev in self._repo.object_store:
+                return rev
+            else:
+                return self._repo.get_peeled(rev)
+
+        def _map_to_version(self, sha):
+            """Map a given sha to a version (branch/tag) if possible."""
+            lookup = {self._map_to_sha(rev): rev for rev in self._find_versions()}
+            return lookup.get(sha, sha)
+
+        def __contains__(self, rev):
+            """Determine whether the release line contains the provided revision."""
+            return rev in [self._map_to_sha(rev) for rev in self._find_versions()]
+
+    def _available_versions(self):
+        if self.is_installed():
+            for version in self._release_line._find_versions():
+                yield 'git:' + version.decode()
+
+    def _installed_version(self):
+        if self.is_installed():
+            if self._repo.head() in self._release_line:
+                return 'git:' + self._release_line._map_to_version(self._repo.head()).decode()
+
 
     @throttled(calls_per_second=1)
     def refresh(self):
         """Refresh app state."""
         with self._show_busy():
             with self.hold_trait_notifications():
+                self.available_versions = list(self._available_versions())
+                self.installed_version = self._installed_version()
                 if self.is_installed() and self._has_git_repo():
-                    self.available_release_lines = set(self._available_release_lines())
-                    try:
-                        self.installed_release_line = 'git:refs/heads/' + self._repo.branch().decode()
-                    except RuntimeError:
-                        self.installed_release_line = None
-                    self.installed_version = self._repo.head()
+                    self.installed_version = self._installed_version()
                     self.check_for_updates()
                     self.set_trait('modified', self._repo.dirty())
                 else:
-                    self.available_release_lines = set()
-                    self.installed_release_line = None
-                    self.installed_version = None
                     self.set_trait('updates_available', None)
                     self.set_trait('modified', None)
 
@@ -436,31 +531,21 @@ class AppManagerWidget(ipw.VBox):
             ipw.HBox([self.modifications_indicator, self.modifications_ignore]),
         ]
 
+
         self.version_selector = VersionSelectorWidget()
-        ipw.dlink((self.app, 'available_release_lines'), (self.version_selector.release_line, 'options'),
-                  transform=lambda release_lines: [(self._format_release_line_name(release_line), release_line)
-                                                   for release_line in release_lines])
-        ipw.dlink((self.app, 'installed_release_line'), (self.version_selector.release_line, 'value'),
-                  transform=lambda value: value if value else None)
+        ipw.dlink((self.app, 'available_versions'), (self.version_selector.install_version, 'options'))
         ipw.dlink((self.app, 'installed_version'), (self.version_selector.installed_version, 'value'),
                   transform=lambda version: '' if version is None else version)
-        self.version_selector.release_line.observe(self._refresh_widget_state, names=['value'])
         ipw.dlink((self.app, 'busy'), (self.version_selector, 'disabled'))
         self.version_selector.layout.visibility = 'visible' if with_version_selector else 'hidden'
         self.version_selector.disabled = True
+        self.version_selector.install_version.observe(self._refresh_widget_state, 'value')
         children.insert(1, self.version_selector)
 
         super().__init__(children=children)
 
         self.app.observe(self._refresh_widget_state)
         self.app.refresh_async()  # init all widgets
-
-    @staticmethod
-    def _format_release_line_name(release_line):
-        """Return a human-readable version of a release line name."""
-        if re.match(r'git:refs\/heads\/.*', release_line):
-            return re.sub(r'git:refs\/heads\/', '', release_line)
-        return release_line
 
     def _refresh_widget_state(self, _=None):
         """Refresh the widget to reflect the current state of the app."""
@@ -480,10 +565,8 @@ class AppManagerWidget(ipw.VBox):
                 tooltip = "Operation blocked due to local modifications."
 
             # Determine whether we can install, updated, and uninstall.
-            requested_release_line = self.version_selector.release_line.value
-            switch_release_line = requested_release_line is not None \
-                and requested_release_line != self.app.installed_release_line
-            can_install = switch_release_line or not self.app.is_installed()
+            can_install = not self.app.is_installed() \
+                    or self.version_selector.install_version.value != self.version_selector.installed_version.value
             can_uninstall = self.app.is_installed()
             try:
                 can_update = self.app.updates_available and not can_install
@@ -495,10 +578,7 @@ class AppManagerWidget(ipw.VBox):
             self.install_button.button_style = 'info' if can_install else ''
             self.install_button.icon = '' if can_install and not modified else warn_or_ban_icon if can_install else ''
             self.install_button.tooltip = '' if can_install and not modified else tooltip if can_install else ''
-            if switch_release_line:
-                self.install_button.description = f'Install ({self._format_release_line_name(requested_release_line)})'
-            else:
-                self.install_button.description = 'Install'
+            self.install_button.description = 'Install'
 
             # Update the uninstall button state.
             self.uninstall_button.disabled = busy or blocked or not can_uninstall
@@ -539,16 +619,16 @@ class AppManagerWidget(ipw.VBox):
         if blocked:
             raise RuntimeError("Unable to perform operation, there are local modifications to the app repository.")
 
-    def _install_version(self, _):
+    def _install_version(self, _=None):
         """Attempt to install the a specific version of the app."""
-        release_line = self.version_selector.release_line.value
+        version = self.version_selector.install_version.value  # can be None
         try:
             self._check_modified_state()
-            release_line = self.app.install_app(release_line)  # argument may be None
+            version = self.app.install_app(version=version)  # argument may be None
         except (AssertionError, RuntimeError, CalledProcessError) as error:
             self._show_msg_failure(str(error))
         else:
-            self._show_msg_success(f"Installed app ({self._format_release_line_name(release_line)}).")
+            self._show_msg_success(f"Installed app ({version}).")
 
     def _update_app(self, _):
         """Attempt to uninstall the app."""
