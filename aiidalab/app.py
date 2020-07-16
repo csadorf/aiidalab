@@ -5,6 +5,7 @@ import re
 import os
 import shutil
 import json
+import enum
 from contextlib import contextmanager
 from time import sleep
 from threading import Thread
@@ -207,6 +208,15 @@ class AiidaLabApp(traitlets.HasTraits):
                 return self.resolve_revision(current_commit)
             raise RuntimeError("Current revision not on release line.")
 
+    class AppInstallationState(enum.Enum):
+        """Show the installation state of this app."""
+        NOT_INSTALLED = enum.auto()
+        INSTALLED = enum.auto()
+        UPDATE_AVAILABLE = enum.auto()
+        DIVERGED = enum.auto()
+        DETACHED = enum.auto()
+        UNKNOWN = enum.auto()
+
     class AppPathFileSystemEventHandler(FileSystemEventHandler):
         """Internal event handeler for app path file system events."""
 
@@ -247,6 +257,24 @@ class AiidaLabApp(traitlets.HasTraits):
         self.path = os.path.join(aiidalab_apps_path, self.name)
         self.refresh_async()
         self._watch_repository()
+
+    def _determine_app_state(self):
+        if os.path.isdir(self.path):
+            # 1. determine ref
+            # 2. check that ref is on release line
+            # 3. check if ref is latest on release line
+            # 4. ...
+            if self._git_url is None:
+                return self.AppInstallationState.UNKNOWN
+            else:
+                base, version = self._git_url.split('@')
+
+                branch_ref = 'refs/heads/' + self._repo.branch().decode()
+                #if self._repo.get_tracked_branch() is None
+                #self._git_remote_refs.get(branch_ref)
+        else:
+            return self.AppInstallationState.NOT_INSTALLED
+
 
     @traitlets.default('modified')
     def _default_modified(self):
