@@ -9,7 +9,7 @@ import json
 from contextlib import contextmanager
 from time import sleep
 from threading import Thread
-from subprocess import check_output, STDOUT, CalledProcessError
+from subprocess import run, check_output, STDOUT, CalledProcessError
 
 import requests
 import traitlets
@@ -208,6 +208,20 @@ class AiidaLabApp(traitlets.HasTraits):
         except NotGitRepository:
             return False
 
+    def _install_dependencies_setup_py(self):
+        raise NotImplementedError()
+        process = run([sys.executable, '-m', 'pip', 'install', '--target=' + os.path.abspath(self.path),
+                      '--editable=.'],
+                      cwd=self.path,
+                      stderr=STDOUT)
+
+    def _install_dependencies_requirements_txt(self):
+        raise NotImplementedError()
+        run([sys.executable, '-m', 'pip', 'install', '--target=' + os.path.abspath(self.path),
+            '--editable=.', '--requirement=' + os.path.join(self.path, 'requirements.txt')],
+            cwd=self.path,
+            stderr=STDOUT)
+
     def install_app(self, version=None):
         """Installing the app."""
         assert self._git_url is not None
@@ -231,18 +245,12 @@ class AiidaLabApp(traitlets.HasTraits):
 
             # Install dependencies into app directory with 'setup.py' if file is present.
             if os.path.isfile(os.path.join(self.path, 'setup.py')):
-                check_output([sys.executable, '-m', 'pip', 'install', '--target=' + os.path.abspath(self.path),
-                              '--editable=.'],
-                              cwd=self.path,
-                              stderr=STDOUT)
+                self._install_dependencies_setup_py()
 
 
-            # Install dependencies into app directory if 'reqiurements.txt' file is present.
+            # # Install dependencies into app directory if 'reqiurements.txt' file is present.
             elif os.path.isfile(os.path.join(self.path, 'requirements.txt')):
-                check_output([sys.executable, '-m', 'pip', 'install', '--target=' + os.path.abspath(self.path),
-                               '--editable=.', '--requirement=' + os.path.join(self.path, 'requirements.txt')],
-                              cwd=self.path,
-                              stderr=STDOUT)
+                self._install_dependencies_requirements_txt()
 
             self.refresh()
             self._watch_repository()
