@@ -238,6 +238,7 @@ class AiidaLabApp(traitlets.HasTraits):
             self._git_remote_refs = {}
             self.categories = None
             self._meta_info = None
+            self._release_line = None
 
         self._observer = None
         self._check_install_status_changed_thread = None
