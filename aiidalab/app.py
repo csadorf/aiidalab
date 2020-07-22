@@ -3,13 +3,14 @@
 
 import re
 import os
+import sys
 import shutil
 import json
 from contextlib import contextmanager
 from enum import Enum, auto
 from time import sleep
 from threading import Thread
-from subprocess import check_output, STDOUT, CalledProcessError
+from subprocess import check_output, STDOUT, CalledProcessError, run
 from dataclasses import dataclass, field, asdict
 
 from typing import List, Dict
@@ -26,7 +27,7 @@ from jinja2 import Template
 from .config import AIIDALAB_DEFAULT_GIT_BRANCH
 from .widgets import StatusHTML, Spinner
 from .git_util import GitManagedAppRepo as Repo
-from .utils import throttled
+from .utils import throttled, DistributionEntry
 
 HTML_MSG_SUCCESS = """<i class="fa fa-check" style="color:#337ab7;font-size:1em;" ></i>
 {}"""
@@ -353,6 +354,20 @@ class AiidaLabApp(traitlets.HasTraits):
         except NotGitRepository:
             return False
 
+    def _install_dependencies(self):
+        from pkg_resources import Requirement, parse_requirements
+        fn_reqs = os.path.join(self.path, 'requirements.txt')
+        if os.path.isfile(fn_reqs):
+            working_set = {DistributionEntry(Requirement.parse(r)) for r in run([sys.executable, '-m', 'pip', 'freeze'], check=True, capture_output=True, encoding='utf8').stdout.splitlines()}
+            with open(fn_reqs) as file:
+                required = {Requirement.parse(line) for line in file}
+            installed = {req for req in required for entry in working_set if entry.fulfills(req)}
+            to_install = required.difference(installed)
+            run([sys.executable, '-m', 'pip', 'install', '-I', '--target=' + self.path] + [str(req) for req in to_install],
+                    capture_output=True,
+                    check=True,
+                    cwd=self.path)
+
     def install_app(self, version=None):
         """Installing the app."""
         assert self._registry_data is not None
@@ -373,6 +388,9 @@ class AiidaLabApp(traitlets.HasTraits):
             # Switch to desired version
             rev = self._release_line.resolve_revision(re.sub('git:', '', version))
             check_output(['git', 'checkout', '--force', rev], cwd=self.path, stderr=STDOUT)
+
+            # Install dependencies
+            self._install_dependencies()
 
             self.refresh()
             self._watch_repository()

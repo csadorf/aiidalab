@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from collections import defaultdict
 from functools import wraps
 from threading import Lock
+from packaging.utils import canonicalize_name
 
 import requests
 from markdown import markdown
@@ -131,3 +132,16 @@ class throttled:  # pylint: disable=invalid-name
             return func(instance, *args, **kwargs)
 
         return wrapped
+
+
+class DistributionEntry:
+    """Helper class to check whether a given distribution fulfills a requirement."""
+
+    def __init__(self, requirement):
+        self._req = requirement
+
+    def fulfills(self, requirement):
+        """Returns True if this entry fullfills the requirement."""
+
+        return canonicalize_name(self._req.name) == canonicalize_name(requirement.name) \
+            and self._req.specs[0][1] in requirement.specifier
