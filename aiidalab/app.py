@@ -97,9 +97,9 @@ class AiidaLabApp(traitlets.HasTraits):
         """Dataclass that contains the app data from the app registry."""
         git_url: str
         meta_url: str
-        metainfo: Dict[str, str]
         categories: List[str]
         groups: List[str]  # appears to be a duplicate of categories?
+        metainfo: Dict[str, str] = field(default_factory=dict)
         gitinfo: Dict[str, str] = field(default_factory=dict)
         hosted_on: str = None
 
