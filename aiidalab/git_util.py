@@ -2,9 +2,13 @@
 """Utility module for git-managed AiiDA lab apps."""
 import re
 from enum import Enum
+from pathlib import Path
+from subprocess import run
+from dataclasses import dataclass
 
 from dulwich.repo import Repo
 from dulwich.porcelain import status, branch_list
+from dulwich.config import parse_submodules, ConfigFile
 
 
 class BranchTrackingStatus(Enum):
@@ -47,10 +51,38 @@ class GitManagedAppRepo(Repo):
         except KeyError:
             return None
 
+    def submodules(self):
+
+        @dataclass
+        class GitSubmodule:
+            dirty: bool
+            commit: str
+            path: Path
+            version: str
+
+        proc = run(['git', 'submodule', 'status'], check=True, capture_output=True, encoding='utf-8', cwd=self.path)
+        for line in proc.stdout.splitlines():
+            status_commit, path, version = line.split()
+            dirty = status_commit[0] != ' '
+            commit = status_commit[1:]
+            assert version.startswith('(') and version.endswith(')')
+            yield GitSubmodule(dirty, commit, path, version[1:-1])
+        return
+
+        gitmodules = ConfigFile.from_path(Path(self.path).joinpath('.gitmodules'))
+        for module in parse_submodules(gitmodules):
+            yield GitSubmodule(*module)
+
     def dirty(self):
         """Check if there are likely local user modifications to the app repository."""
         status_ = status(self)
-        return bool(any(bool(_) for _ in status_.staged.values()) or status_.unstaged)
+        any_staged = any(len(files) > 0 for files in status_.staged.values())
+        for submodule in self.submodules():
+            print(submodule)
+        clean_submodules = (sm for sm in self.submodules() if sm.version != '(null)')
+        sm_paths_ignore = (sm.path.encode() for sm in clean_submodules)
+        unstaged = set(status_.unstaged).difference(sm_paths_ignore)
+        return any_staged or any(unstaged)
 
     def update_available(self):
         """Check whether there non-pulled commits on the tracked branch."""
