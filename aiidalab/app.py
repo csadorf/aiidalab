@@ -250,6 +250,9 @@ class AiidaLabApp(traitlets.HasTraits):
 
             return None
 
+        def full_ref(self):
+            return self._resolve_short_ref(self.line)
+
         def find_versions(self):
             """Find versions available for this release line.
 
@@ -436,11 +439,10 @@ class AiidaLabApp(traitlets.HasTraits):
         """Check whether there is an update available for the installed release line."""
         try:
             assert self._registry_data is not None
-            branch_ref = 'refs/heads/' + self._repo.branch().decode()
-            assert self._repo.get_tracked_branch() is not None
-            remote_ref = self._registry_data.gitinfo.get(branch_ref)
+            release_line_ref = self._release_line.full_ref()
+            remote_ref = self._registry_data.gitinfo.get(release_line_ref)
             remote_update_available = remote_ref is not None and remote_ref != self._repo.head().decode()
-            self.set_trait('updates_available', remote_update_available or self._repo.update_available())
+            self.set_trait('updates_available', remote_update_available)
         except (AssertionError, RuntimeError):
             self.set_trait('updates_available', None)
 
