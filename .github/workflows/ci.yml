@@ -22,8 +22,12 @@ jobs:
       - name: Install package
         run: |
           which python
-          python -m pip install -e .[tests]
+          python -m pip install -e .[tests,pre-commit]
           python -m pip freeze
+
+      - name: Run pre-commit
+        run:
+          pre-commit run --all-files || ( git status --short ; git diff ; exit 1 )
 
       - name: Run tests
         run: python -m pytest -v

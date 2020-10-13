@@ -18,3 +18,9 @@
     name: prospector
     description: "This hook runs Prospector: https://github.com/landscapeio/prospector"
     entry: prospector
+
+  - id: check-requirements
+    name: check requirements files
+    language: system
+    entry: python -m scripts.check_requirements -v
+    files: ^(requirements.*.txt|Pipfile|setup\.json)$
